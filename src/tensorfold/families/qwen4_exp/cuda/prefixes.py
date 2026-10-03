@@ -46,7 +46,7 @@ def slot_for(owner, prompt: list[int], reuse: bool):
         if idle is None:
             raise RuntimeError("no free stream slot")
         cost = max(len(k[0]) for k in owner.kept if k[1] is idle)
-        if cost >= PROTECT * len(prompt) and owner.live():
+        if cost >= max(PROTECT * len(prompt), MIN_PROTECT) and owner.live():
             # Waiting for a live stream to end costs this prompt a few rounds; dropping the slot would make that
             # conversation's next turn prefill ``cost`` tokens again (a 32k-token chain: 15-20 s on one GB10).
             raise NoRoom(f"a {len(prompt)}-token prompt waits for a stream to end rather than drop a "
@@ -59,6 +59,7 @@ def slot_for(owner, prompt: list[int], reuse: bool):
 # A slot whose kept chain costs PROTECT times the incoming prompt or more is not dropped to admit it while a live
 # stream will free a slot: short requests (routing calls, a few hundred tokens) wait instead of evicting conversations.
 PROTECT = 4
+MIN_PROTECT = 4096        # a shorter kept end refills in about a second: never worth making a prompt wait
 
 
 # Which kept prompt end goes: the least recently used among those PROTECT times shorter than the longest kept, else

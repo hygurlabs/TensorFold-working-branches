@@ -63,3 +63,10 @@ def test_a_prompt_comparable_to_the_kept_end_still_takes_its_slot():
     own = owner([(400, other)], live=1)
     st, _, cached = prefixes.slot_for(own, list(range(5000, 5300)), False)
     assert st is other and cached == 0
+
+
+def test_a_short_kept_end_is_dropped_at_once_even_while_streams_are_live():
+    other = Slot()
+    own = owner([(500, other)], live=2)
+    st, _, cached = prefixes.slot_for(own, list(range(5000, 5020)), False)      # 500 >= 4 x 20, but only 500 tokens
+    assert st is other and cached == 0 and own.kept == []
