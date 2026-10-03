@@ -10,6 +10,22 @@ def _longer(kept, entry):
     return any(k[1] is entry[1] and len(k[0]) > len(entry[0]) for k in kept)
 
 
+def _claim_idle(owner, best, busy) -> None:
+    """No spare slot for a fork: the idle slot holding the fewest kept tokens is freed for it, unless resuming in
+    place would drop less (the longer entries of ``best``'s own slot; a busy slot cannot be resumed in place)."""
+
+    cost = {}
+    for ids, st, _, _ in owner.kept:
+        if id(st) not in busy and st is not best[1]:
+            cost[id(st)] = (max(len(ids), cost.get(id(st), (0, st))[0]), st)
+    if not cost:
+        return
+    tokens, idle = min(cost.values(), key=lambda c: c[0])           # the oldest of equal costs
+    if id(best[1]) in busy or tokens < max(len(k[0]) for k in owner.kept if k[1] is best[1]) - len(best[0]):
+        owner._drop_kept(idle)
+        owner.free.append(idle)
+
+
 def slot_for(owner, prompt: list[int], reuse: bool):
     """Copy a fork into spare capacity; otherwise retain the released idle-slot and memory-pressure behavior."""
 
@@ -17,6 +33,8 @@ def slot_for(owner, prompt: list[int], reuse: bool):
     best = _best(owner.kept, prompt) if reuse else None
     fork = best is not None and (id(best[1]) in busy or _longer(owner.kept, best))
     if fork:
+        if not owner.free:
+            _claim_idle(owner, best, busy)
         if owner.free:
             spare = owner.free.pop()
             try:
