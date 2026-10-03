@@ -152,16 +152,18 @@ class MultiDecoder(TwoRanks, Alone, PromptPasses):
             self.memory_gate.give(-st.resize(min(FIRST, st.limit)))
 
     def _evict_kept(self, keep: State, *, protect: State | None = None) -> bool:
-        """Free the oldest idle kept prompt end (never ``keep``); False when none is left."""
+        """Free the idle kept prompt end cheapest to refill (never ``keep``); False when none is left. The caller
+        repeats until the caches have room, so a short end going first only frees less per call."""
 
         busy = self._busy()
-        for ids, st, _, _ in self.kept:
-            if st is not keep and st is not protect and id(st) not in busy:
-                self._drop_kept(st)
-                self._shrink(st, release=True)
-                if all(f is not st for f in self.free):
-                    self.free.append(st)
-                return True
+        st = prefixes.cheapest_slot(self, [k for k in self.kept
+                                           if k[1] is not keep and k[1] is not protect and id(k[1]) not in busy])
+        if st is not None:
+            self._drop_kept(st)
+            self._shrink(st, release=True)
+            if all(f is not st for f in self.free):
+                self.free.append(st)
+            return True
         solo = None if self.solo is None else self.solo.st
         if (solo is not None and solo is not keep and solo is not protect
                 and id(solo) not in busy and solo.capacity > FIRST):
