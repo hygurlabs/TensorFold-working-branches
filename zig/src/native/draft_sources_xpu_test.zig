@@ -113,6 +113,33 @@ test "lfm3 refusal: the XPU open refuses the block FP8 export by name, before th
     try std.testing.expectEqualStrings(cfg.config.servedProblem(error.Lfm3Fp8BlockNotOnXpu).?, problem);
 }
 
+test "inkling2 refusal: the XPU open refuses Inkling 2 Mini by name, before the driver or any weight" {
+    const std = @import("std");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cfg = @import("inkling2_xpu");
+    // config.json alone and no Level Zero here: an open that went on would fail at the driver with another problem
+    try tmp.dir.writeFile(io, .{ .sub_path = "config.json", .data = cfg.fixtures.mini });
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", a);
+    var problem: []const u8 = "";
+    const o: @import("engine_api").Open = .{ .dir = dir, .model_type = cfg.model_type, .context = 4096 };
+    try std.testing.expect((try @import("xpu.zig").open(a, std.testing.allocator, io, o, &problem)) == null);
+    try std.testing.expectEqualStrings(try cfg.refusal(a, cfg.fixtures.mini), problem);
+    try std.testing.expect(std.mem.indexOf(u8, problem, "not available yet") != null);
+    // a config the family refuses keeps its own reason, still ahead of the driver
+    try tmp.dir.writeFile(io, .{ .sub_path = "config.json", .data = "{" });
+    try std.testing.expect((try @import("xpu.zig").open(a, std.testing.allocator, io, o, &problem)) == null);
+    try std.testing.expectEqualStrings("inkling2_loop: config.json is not JSON", problem);
+    // no config.json at all: still a refusal that names the file
+    try tmp.dir.deleteFile(io, "config.json");
+    try std.testing.expect((try @import("xpu.zig").open(a, std.testing.allocator, io, o, &problem)) == null);
+    try std.testing.expect(std.mem.indexOf(u8, problem, "cannot read") != null);
+}
+
 test "draft sources: XPU verify gives each window row the logprob row of its own place in the block" {
     const std = @import("std");
     const lanes = @import("lanes");

@@ -3,6 +3,7 @@
 const std = @import("std");
 const exlr8_build = @import("exlr8.zig");
 const xpu_contract = @import("xpu_contract.zig");
+const inkling2_xpu = @import("inkling2_xpu.zig");
 
 /// ze.zig as its own module: the Qwen27 runner and the Nemotron runtime share one Level Zero table.
 fn zeModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
@@ -187,7 +188,7 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     const lanes = b.createModule(.{ .root_source_file = b.path("zig/src/core/lanes/lanes.zig"), .target = target, .optimize = optimize, .link_libc = true });
     const nem = nemotronModules(b, target, optimize, ocloc, device, dpas, ze_mod, core, lanes);
     const api = b.createModule(.{ .root_source_file = b.path("zig/src/core/engine_api.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "lanes", .module = lanes }} });
-    const engines = b.createModule(.{ .root_source_file = b.path("zig/src/native/xpu.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "engine_api", .module = api }, .{ .name = "lanes", .module = lanes }, .{ .name = "xpu", .module = nem.xpu }, .{ .name = "nemotron_xpu", .module = nem.nemotron }, .{ .name = "lfm3_xpu", .module = lfm3Module(b, target, optimize, nem.xpu) } } });
+    const engines = b.createModule(.{ .root_source_file = b.path("zig/src/native/xpu.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "engine_api", .module = api }, .{ .name = "lanes", .module = lanes }, .{ .name = "xpu", .module = nem.xpu }, .{ .name = "nemotron_xpu", .module = nem.nemotron }, .{ .name = "lfm3_xpu", .module = lfm3Module(b, target, optimize, nem.xpu) }, .{ .name = "inkling2_xpu", .module = inkling2_xpu.module(b, target, optimize) } } });
     // the Qwen3.8-27B runner and Gemma 4 E4B (DPAS, nGEN) only with DPAS: a Gen12LP server serves Nemotron and LFM3
     const engine_options = b.addOptions();
     engine_options.addOption(bool, "qwen27", dpas);
@@ -382,6 +383,7 @@ pub fn hostTests(b: *std.Build, step: *std.Build.Step) void {
     gemma_native.addImport("xpu_gemma4_kernels", empty);
     sources.addImport("gemma4_xpu", gemma_native);
     sources.addImport("lfm3_xpu", lfm3Module(b, b.graph.host, .debug, xpu));
+    sources.addImport("inkling2_xpu", inkling2_xpu.module(b, b.graph.host, .debug));
     // the host test checks every family's admission, so it builds with both DPAS engines
     const source_options = b.addOptions();
     source_options.addOption(bool, "qwen27", true);
@@ -403,6 +405,11 @@ pub fn hostTests(b: *std.Build, step: *std.Build.Step) void {
         const lfm3_refusal = b.addRunArtifact(b.addTest(.{ .root_module = sources, .filters = &.{"lfm3 refusal:"} }));
         b.step("test-lfm3-xpu-refusal-host", "The XPU open refuses LFM3's ModelOpt NVFP4 and block FP8 exports by name, without devices").dependOn(&lfm3_refusal.step);
         step.dependOn(&lfm3_refusal.step);
+    }
+    if (host.result.os.tag != .windows) {
+        const inkling2_refusal = b.addRunArtifact(b.addTest(.{ .root_module = sources, .filters = &.{"inkling2 refusal:"} }));
+        b.step("test-inkling2-xpu-refusal-host", "The XPU open refuses Inkling 2 Mini by name until its engine exists, without devices").dependOn(&inkling2_refusal.step);
+        step.dependOn(&inkling2_refusal.step);
     }
     b.step("test-slide-xpu-host", "Unsupported XPU learning refuses before device or checkpoint access").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = sources, .filters = &.{"slide admission:"} })).step);
     // the Gemma 4 runner's shard header reader on core (gemma4/xpu_dev.zig), so its malformed inputs run

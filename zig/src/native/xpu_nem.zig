@@ -10,7 +10,7 @@ const Allocator = std.mem.Allocator;
 pub const has_gemma4 = @import("xpu_engine_options").gemma4;
 
 /// The families this host serves, each a file with its table row, loader and prompt window.
-const specs = if (has_gemma4) .{ @import("xpu_nemotron.zig"), @import("xpu_gemma4.zig"), @import("xpu_lfm3.zig") } else .{ @import("xpu_nemotron.zig"), @import("xpu_lfm3.zig") };
+const specs = if (has_gemma4) .{ @import("xpu_nemotron.zig"), @import("xpu_gemma4.zig"), @import("xpu_lfm3.zig"), @import("xpu_inkling2.zig") } else .{ @import("xpu_nemotron.zig"), @import("xpu_lfm3.zig"), @import("xpu_inkling2.zig") };
 
 /// Prompt plus reply tokens when --context names none (and the model's window is larger).
 const default_context: i64 = 32768;
@@ -120,6 +120,10 @@ fn openFamily(comptime S: type, a: Allocator, gpa: Allocator, io: std.Io, o: api
         problem.* = why;
         return null;
     };
+    if (comptime !@hasDecl(S, "Engine")) { // a row whose engine is not built: its refusal is the whole answer
+        problem.* = try std.fmt.allocPrint(a, "{s}: the native Intel GPU engine has no backend for this checkpoint yet", .{S.model_type});
+        return null;
+    }
     const native = modelContext(a, io, o.dir);
     const window: i64 = o.context orelse (if (native > 0) @min(native, default_context) else default_context);
     if (window <= 0 or (native > 0 and window > native)) {
