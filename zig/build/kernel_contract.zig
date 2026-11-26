@@ -14,6 +14,7 @@ pub fn hostTests(b: *std.Build, family: *std.Build.Step) void {
     run.has_side_effects = true;
     const attn = b.addTest(.{ .root_module = module(b, b.graph.host, .debug), .filters = &.{"XPU attention:"} });
     b.step("test-xpu-attn-contract-host", "Decode attention's float64 reference, tree, tail and sum fixtures (no GPU)").dependOn(&b.addRunArtifact(attn).step);
+    b.step("test-xe2-dpas-host", "The Xe2 DPAS model against operands measured on the card (no GPU)").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module(b, b.graph.host, .debug), .filters = &.{"xe2 dpas:"} })).step);
     b.step("test-kernel-seed-host", "Named contract fixtures keep their seed when entries are inserted").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module(b, b.graph.host, .debug), .filters = &.{"contract seed:"} })).step);
     const step = b.step("test-kernel-contract", "The kernel contract's host tests: gate logic, controls, every launch against every chip");
     step.dependOn(&run.step);

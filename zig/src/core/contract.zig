@@ -32,6 +32,8 @@ pub const vulkan_records = @import("contract/vulkan_records.zig");
 pub const xpu_limits = @import("contract/xpu_limits.zig");
 pub const xpu_records = @import("contract/xpu_records.zig");
 pub const xpu_ref = @import("contract/xpu_ref.zig");
+pub const xe2_dpas = @import("contract/xe2_dpas.zig");
+pub const xe2_dpas_cases = @import("contract/xe2_dpas_cases.zig");
 pub const zebin = @import("contract/zebin.zig");
 pub const zeinfo = @import("contract/zeinfo.zig");
 test {
@@ -43,6 +45,11 @@ test {
 }
 test {
     _ = xpu_ref;
+}
+test {
+    _ = xe2_dpas;
+    _ = xe2_dpas_cases;
+    _ = @import("contract/xe2_dpas_test.zig");
 }
 test {
     _ = zebin;
