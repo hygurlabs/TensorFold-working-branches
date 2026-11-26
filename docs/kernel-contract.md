@@ -151,6 +151,30 @@ native zebins the audit reads, so the GRF mode the record states is the loaded i
 id it ran on. `xpu-contract-run` runs it on this card. On a host without ocloc, `-Dxpu-images=DIR` links zebins that
 another host made with the commands the receipt records.
 
+The Xe2 matrix unit's arithmetic is a host function, `zig/src/core/contract/xe2_dpas.zig` (`mad`, `dot`): bf16 and f16
+sum groups of four products and tf32 groups of two, a tf32 operand being its f32 bits cut to ten mantissa bits. Group
+after group in slot order, each product is floored into a 27-bit window below the largest window exponent of the group
+and of the running sum while that sum is nonzero; a product's window exponent is the sum of its exponent fields, except
+that f16 normalises a subnormal operand first. The accumulator is added last with one round to nearest even. NaN, inf x
+0 and inf - inf give the one NaN `0xffc00000`; otherwise an infinity wins; an exact zero sum is +0. A DPAS-based XPU
+baseline names this model and its K-block order, and its contract computes the expected bits on the host.
+
+`zig build -Dxpu-contract=true tf-xpu-xe2-dpas-check` builds the checker. It runs the corpus of `xe2_dpas_cases.zig`
+through the card's own DPAS and compares every output with the model bit for bit. The corpus has four parts: hand-built
+cases, each aimed at one rule; special values; a slot sweep, a product of 1 and two small products at every slot triple,
+whose result says which group each slot is in and in which order groups enter the window; and seeded random classes
+(`--tiles N` per class: tight, mid, subnormal, cancelling and near-cancelling, and for bf16 also wide and ties). Each
+planted fault (`Fault`) changes one rule: a window of 26 or 28 bits, groups halved, doubled or reversed, products and
+the running sum cut instead of floored, the accumulator first, normalisation flipped, a window that never closes or that
+narrows to the sum, rounding toward zero or ties away, flushed subnormals, IEEE's zero sign, rounded tf32 operands, the
+positive NaN, a chain of f32 fused multiply-adds, and an exact sum. The run fails if a fault is not caught on a format
+it applies to, if the sweep misses a window, group or order fault, or if the specials miss the NaN or the zero rule.
+`--emit FILE` writes the card's results on a sample of the corpus (`xe2_dpas_vectors.txt`); `zig build
+test-xe2-dpas-host` replays it without a card, checks that its operands are still this corpus's, in order, that the
+card's results catch every fault as the checker requires, and that each hand-built case catches one. The model was
+fitted and the vectors made on an Arc Pro B70 (BMG-G31) with compute runtime 26.35.39758.21 and IGC 2.41.5; a driver or
+IGC change is re-validated by running the checker, and a mismatch there means the baseline moved with the driver.
+
 The decode attention registration runs `attn_decode` followed by `attn_merge` as one operator: bf16 query rows,
 bf16 K/V cache and a tree table to bf16 attention rows. Gate 3 requires the bytes of the upstream `1a5644892` pair,
 whose decode grid is retained in `zig/kernels/xpu/contract_attn_upstream.cl`. It covers single rows and branching

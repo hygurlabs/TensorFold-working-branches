@@ -51,6 +51,7 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     audit.addDirectoryArg(files.getDirectory());
     b.step("xpu-kernel-contract-limits", "Every registered XPU launch against the BMG card and its compiled images (no GPU)").dependOn(&audit.step);
     runner(b, target, optimize, ocloc, device, prebuilt);
+    @import("xe2_dpas.zig").steps(b, target, optimize, ocloc, device);
 }
 
 /// The device runner: gates 1 to 4 and gate 5 live on a card, with the images linked in; `prebuilt` is -Dxpu-images.
