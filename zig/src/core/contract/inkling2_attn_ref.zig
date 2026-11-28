@@ -69,11 +69,29 @@ pub const Chain = struct {
     dot: f64,
     tile: f64,
     unit: f64,
+    fold: Fold = .{},
+
+    /// How a row's keys are folded: P.V tiles in a block, sub-chunk folds, keys a global chunk; a sliding row's.
+    pub const Fold = struct {
+        global_tiles: f64 = 16,
+        global_subs: f64 = 16,
+        global_chunk: usize = 16384,
+        sliding_tiles: f64 = 4,
+        sliding_chunks: f64 = 5,
+    };
 
     /// 8 chained mma (k16) a dot, 4 a tile and its rescale; a tensor-core add may truncate (2^-23).
     pub const cuda: Chain = .{ .dot = 8 * 17, .tile = 4 * 17 + 1, .unit = 0x1p-23 };
     /// HIP's scalar IEEE adds: 128 a dot from 0, a tile's 64 keys after its rescale.
     pub const hip: Chain = .{ .dot = 128, .tile = 64 + 1, .unit = u };
+    /// Xe2's DPAS counted as CUDA's mma, over the baseline's chunks: 256 keys global, 128 sliding, folded in order.
+    pub const xpu: Chain = .{ .dot = 8 * 17, .tile = 4 * 17 + 1, .unit = 0x1p-23, .fold = .{
+        .global_tiles = 4,
+        .global_subs = 0,
+        .global_chunk = 256,
+        .sliding_tiles = 2,
+        .sliding_chunks = 9,
+    } };
 };
 
 /// One attention call's host inputs as the device holds them (bf16 bits) and where its rows sit.
@@ -100,16 +118,18 @@ pub const Call = struct {
     /// The fp32 sums' longest chain at a row: a 64-key tile's adds and its rescale (`chain.tile`), then the folds.
     fn depth(call: *const Call, pos: usize) f64 {
         const global = call.window == 0;
-        const tiles: f64 = if (global) 16 else 4; // a block's tiles: a 1,024-key sub-chunk, or a 256-key chunk
-        const chunks: f64 = @floatFromInt(if (global) pos / 16384 + 1 else 5);
-        const subs: f64 = if (global) 16 else 0;
+        const f = call.chain.fold;
+        const tiles: f64 = if (global) f.global_tiles else f.sliding_tiles; // a block's tiles
+        const chunks: f64 = if (global) @floatFromInt(pos / f.global_chunk + 1) else f.sliding_chunks;
+        const subs: f64 = if (global) f.global_subs else 0;
         return tiles * call.chain.tile + 2 * (subs + chunks) + 8;
     }
 
     /// Rescales a key's weight meets (exp2f within 2 ulp, then a product): in-tile, sub-chunk and chunk folds.
     fn rescales(call: *const Call, pos: usize) f64 {
         const global = call.window == 0;
-        return (if (global) 16 + 16 + @as(f64, @floatFromInt(pos / 16384 + 1)) else 4 + 5) + 2;
+        const f = call.chain.fold;
+        return (if (global) f.global_tiles + f.global_subs + @as(f64, @floatFromInt(pos / f.global_chunk + 1)) else f.sliding_tiles + f.sliding_chunks) + 2;
     }
 
     fn keyRow(call: *const Call, which: []const u16, st: usize, kvh: usize, slot: usize) []const u16 {
@@ -254,6 +274,8 @@ test "a call carries its rank's heads, key heads and chains; tau takes the model
     try std.testing.expectEqual(@as(usize, kv), call.kv);
     try std.testing.expectEqual(Chain.cuda, call.chain);
     try std.testing.expect(Chain.hip.unit < Chain.cuda.unit and Chain.hip.tile < Chain.cuda.tile);
+    try std.testing.expectEqual(Chain.cuda.fold, Chain.hip.fold);
+    try std.testing.expectEqual(@as(usize, 256), Chain.xpu.fold.global_chunk);
 }
 
 fn pinned(i: usize, m: usize) u16 {
