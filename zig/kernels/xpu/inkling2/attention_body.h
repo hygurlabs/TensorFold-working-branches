@@ -1,3 +1,6 @@
+#ifndef PV_BLOCK
+#define PV_BLOCK(i) (i)  // the order of a tile's 16-key blocks in P.V: a contract control plants another
+#endif
 #if QSLM
 #define QV(t, ds) Qs[((t) * (HD / 16) + (ds)) * 16 + lane]
 #else
@@ -150,7 +153,8 @@ KERNEL(128) void NAME(global const ushort *Q,
 #pragma unroll
         for (int i = 0; i < 8; i++) o[t][h][i] *= sub_group_broadcast(alpha[t], 8 * h + i);
     }
-    for (int cb = 0; cb < TILE / 16; cb++) {
+    for (int ci = 0; ci < TILE / 16; ci++) {
+      const int cb = PV_BLOCK(ci);
       if (kt + cb * 16 > pos_last || kt + cb * 16 + 15 < tile_lo) continue;
       uint8 vw;
       intel_sub_group_2d_block_read_transform_16b_16r16x1c((global void *)vbase, wbytes, ring, pitch, (int2)(sg * 16, (kt + cb * 16) % ring), (private uint *)&vw);
