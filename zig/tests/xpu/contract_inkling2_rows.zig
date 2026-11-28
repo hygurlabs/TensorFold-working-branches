@@ -238,6 +238,8 @@ pub const Attn = struct {
         d.kc = try self.rig.input(std.mem.sliceAsBytes(td.kc));
         d.vc = try self.rig.input(std.mem.sliceAsBytes(td.vc));
         d.tab = try self.rig.input(std.mem.sliceAsBytes(td.tab));
+        // the sink outweighs every key (y is ~0), so dropping it moves y by its whole size
+        if (self.o.plant == .no_sink and fill == .random) @memset(td.sink, ref.bits(40));
         d.sink = try self.rig.input(std.mem.sliceAsBytes(td.sink));
         d.gate = try self.rig.input(std.mem.sliceAsBytes(td.gate));
         d.sink_run = d.sink;
@@ -376,8 +378,10 @@ pub const Attn = struct {
         self.tol = try a.alloc(f64, want.len);
         const cl = self.call();
         if (self.o.exact_p and self.fill == .random) {
-            for (0..self.shape.rows * heads) |rh| fill_.exactP(&cl, rh / heads, rh % heads, want[rh * D ..][0..D]);
-            @memset(self.tol, 0); // bit for bit
+            // bit for bit, one bf16 ulp only within 4 fp32 ulp of a tie (the device's `/` is inexact)
+            for (0..self.shape.rows * heads) |rh| {
+                fill_.exactP(&cl, rh / heads, rh % heads, want[rh * D ..][0..D], self.tol[rh * D ..][0..D]);
+            }
         } else try fill_.Pool.run(a, .{ .call = &cl, .want = want, .tol = self.tol }, self.shape.rows * heads);
         for (mag, want) |*m, w| m.* = @abs(w);
     }

@@ -125,10 +125,12 @@ pub const Data = struct {
             for (d.tab[rh * ref.extent ..][0..ref.extent], 0..) |*o, dd| {
                 var acc: f64 = 0;
                 for (rel, 0..) |rv, j| acc += rv * proj[j * ref.extent + dd];
-                o.* = if (stress) 0 else ref.bits(acc); // the bf16 table: rel . proj rounded once (transformers' bf16 matmul)
+                // the bf16 table: rel . proj rounded once (transformers' bf16 matmul)
+                o.* = if (stress) 0 else ref.bits(acc);
             }
             d.sink[rh] = if (stress) 0xff80 else ref.bits(8 + 16 * rng.float(f64)); // a raw logit
-            for (d.gate[rh * D ..][0..D]) |*o| o.* = ref.bits(if (stress) 32 else rng.floatNorm(f64) * 2); // raw, pre-sigmoid
+            // raw, pre-sigmoid
+            for (d.gate[rh * D ..][0..D]) |*o| o.* = ref.bits(if (stress) 32 else rng.floatNorm(f64) * 2);
         }
         if (fill == .nonfinite) d.plantNonfinite(ring);
     }
@@ -198,8 +200,8 @@ fn fillExactP(d: *Data, a: std.mem.Allocator, lay: Layout, seed: u64) !void {
     }
 }
 
-/// An exact-P row's outputs: sum bf16(P) v and sum bf16(P) are exact in fp32 (23 bits), so out = bf16(fp32(o / l)).
-pub fn exactP(call: *const ref.Call, r: usize, h: usize, out: []f64) void {
+/// An exact-P row's bf16(o / l), exact to the bit but one ulp near a tie, as the device's `/` is not correctly rounded.
+pub fn exactP(call: *const ref.Call, r: usize, h: usize, out: []f64, tol: []f64) void {
     const pos = call.pos[r];
     const lo = if (call.window > 0) (pos + 1) -| call.window else 0;
     const t = call.tab[(r * heads + h) * ref.extent ..][0..ref.extent];
@@ -211,7 +213,17 @@ pub fn exactP(call: *const ref.Call, r: usize, h: usize, out: []f64) void {
         l += w;
         for (&o, call.v[(base + p % call.ring) * D ..][0..D]) |*x, v| x.* += w * ref.bf(v);
     }
-    for (out, o) |*y, x| y.* = c.fromBf16(c.toBf16(@as(f32, @floatCast(x)) / @as(f32, @floatCast(l))));
+    for (out, tol, o) |*y, *e, x| {
+        const q = x / l; // o and l are exact fp32 values: the true quotient
+        y.* = c.fromBf16(c.toBf16(@as(f32, @floatCast(q))));
+        e.* = 0;
+        if (q == 0) continue;
+        const ulp32 = std.math.ldexp(@as(f64, 1), std.math.frexp(q).exponent - 24);
+        for ([_]f64{ -4, 4 }) |k| {
+            const near = c.fromBf16(c.toBf16(@as(f32, @floatCast(q + k * ulp32))));
+            if (near != y.*) e.* = 1.5 * std.math.ldexp(@as(f64, 1), std.math.frexp(y.*).exponent - 8); // 1.5 bf16 ulp
+        }
+    }
 }
 
 /// The reference's (row, head) pairs (gate 4: (row, key head) pairs) over up to six threads, each its own buffers.
