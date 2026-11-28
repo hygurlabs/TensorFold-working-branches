@@ -8,7 +8,8 @@ figures, and this guide does not repeat them.
 The port serves one model, Qwen3.8-27B (`model_type` `qwen3_5`: 48 Gated DeltaNet (GDN) layers and 16 attention
 layers, the pattern being "every fourth layer is attention"), straight over **Level Zero** (loaded with `dlopen`, no
 C header, no SYCL, no PyTorch). All GPU code is OpenCL C compiled offline by `ocloc`, plus GEMMs generated as ISA by
-nGEN, and is embedded in the executables.
+nGEN, and is embedded in the executables. Inkling 2 Mini's attention kernels and contract are in the tree too (section
+1), but its open refuses until its engine lands.
 
 ## 1. Where things are
 
@@ -38,8 +39,9 @@ nGEN, and is embedded in the executables.
 | [`tools/xpu/`](../../tools/xpu) | Quality studies: `a8_study.py` (W4A8), `head_study.py` (the requantized output head). |
 | [`tools/bench_openai.py`](../../tools/bench_openai.py), [`tools/bench_concurrent.py`](../../tools/bench_concurrent.py) | Server benches; `bench_concurrent.py --alone --serial` also checks the bit-for-bit contracts end to end. |
 
-The port modifies no core file: it plugs into the core's lane host and its lone driver (`Lone.resumes`) as they
-are; `build.zig` only adds the XPU steps.
+The serving path modifies no core file: it plugs into the core's lane host and its lone driver (`Lone.resumes`) as they
+are. The Inkling 2 kernel contract does touch the core's contract code (`core/contract.zig`, `inkling2_attn_ref.zig`,
+`xpu_records.zig`, the `xe2_dpas*` files), and `build.zig` and `zig/build/` add the XPU and contract steps.
 
 ## 2. Building
 

@@ -586,10 +586,10 @@ XPU-ATT-QK, -SOFTMAX, -PV, -FOLD-256, -FOLD-128 and -MERGE (kernels in `zig/kern
 (m, l, o) are kept for 256 global or 128 sliding keys at absolute positions, and `ink2_merge` folds a row's chunks in
 order, then the sink as one raw logit with no value, then the sigmoid of the raw gate, rounding once to bf16. The merge
 uses the device's own `exp`, `exp2` and `/` (the image is built without the correctly rounded divide flag), so the
-float64 bound carries their error. Gate 3 has four byte comparisons, each against kernels frozen from the
-`ink-xpu-baseline` engine (`contract_inkling2_upstream*.cl`, KV8 off): the served launches against the frozen ones, the
-verify and prompt launches against one-row decode, three streams in one launch against each stream alone, and
-`ink2_prep` and `ink2_rel_table` against the frozen ones. Two exact cases pin P's bf16 rounding (sliding and global):
+float64 bound carries their error. Gate 3 has four byte comparisons. Two are against kernels frozen from the
+`ink-xpu-baseline` engine (`contract_inkling2_upstream*.cl`, KV8 off): the served launches, and `ink2_prep` with
+`ink2_rel_table`. Two are of the new kernels against themselves: the verify and prompt launches against one-row decode,
+and three streams in one launch against each stream alone. Two exact cases pin P's bf16 rounding (sliding and global):
 rows below position 64, q 0, no sink, gate 1 and integer values, where every sum is exact and each output must equal
 bf16(sum P v / sum P); the device's `/` is not correctly rounded, so an output whose quotient lies within 4 fp32 ulp of
 a bf16 tie may round either way and is allowed one bf16 ulp, every other output none. Five planted controls go red at
@@ -597,8 +597,12 @@ a bf16 tie may round either way and is allowed one bf16 ulp, every other output 
 256, no sink (a sink above every key, run as -inf, so dropping it moves the output by its whole size) and no gate. The
 NaN rule: prep writes a value row that is not finite as zeros and its key row as NaN, so a NaN key makes every row that
 sees it NaN (the float64 reference gives the same classes), and the panels also plant a NaN q, +inf and NaN sinks and
-infinite gates. `attend()` refuses a ring that is not whole 64-key tiles, partial buffers that are too small, and a
-call with no streams. INT8 caches are outside it. The engine is not wired: the XPU open still refuses Inkling 2.
+infinite gates. `attend()` refuses, before any launch: a ring that is not whole 64-key tiles, a ring shorter than the
+window plus the call's rows less one (a global layer: shorter than its rows), a call with no streams, a prompt over
+more than one stream, a prompt whose first row is not row 0, partial buffers too small for the call or that cannot hold
+one prompt tile, and a tile table that is not the rows'. A prompt window is at most 24 tiles of 21 rows (504 rows).
+`Geometry.fromText` and `Kernels.load` refuse any geometry but the compiled one (24 query heads, 8 key heads, 1,024
+positions): there is no per-geometry build yet. INT8 caches are outside it. The engine is not wired: the XPU open still refuses Inkling 2.
 
 On gfx12, HIP also checks the WMMA dense tile (`dense_wmma12_gemm`, both block geometries, fp32 and BF16 out). The
 small block meets its depth-k bound. The big block (64-deep K steps over swizzled LDS rows) replaces the 32-deep block
