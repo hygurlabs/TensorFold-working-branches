@@ -226,7 +226,7 @@ pub const Prep = struct {
     }
 
     fn rowSet(self: *const Prep) X.Rows {
-        return .{ .rows = @intCast(self.shape.rows), .pos = self.pos_in, .seg_of = self.seg_of, .segs = self.segs, .tiles = null, .n_tiles = 0, .last_pos = @intCast(self.shape.k - 1), .streams = @intCast(self.lay.streams) };
+        return .{ .rows = @intCast(self.shape.rows), .pos = self.pos_in, .seg_of = self.seg_of, .segs = self.segs, .tiles = null, .n_tiles = 0, .last_pos = @intCast(self.shape.k - 1), .streams = @intCast(self.lay.streams), .row0 = 0 };
     }
 
     pub fn run(self: *Prep) !void {
@@ -253,7 +253,7 @@ pub const Prep = struct {
             try self.launch(&frozen, self.rowSet(), self.in[0..4].*, to[0], to[1], .{ .k = to[2], .v = to[3] });
         } else for (self.lay.segs, self.alone) |s, one| {
             const r0: usize = @intCast(s.row0);
-            const r: X.Rows = .{ .rows = @intCast(s.n), .pos = X.at(self.pos_in, r0 * 4), .seg_of = self.seg_zero, .segs = one, .tiles = null, .n_tiles = 0, .last_pos = @intCast(s.p0 + s.n - 1), .streams = 1 };
+            const r: X.Rows = .{ .rows = @intCast(s.n), .pos = X.at(self.pos_in, r0 * 4), .seg_of = self.seg_zero, .segs = one, .tiles = null, .n_tiles = 0, .last_pos = @intCast(s.p0 + s.n - 1), .streams = 1, .row0 = 0 };
             const raw = [4]Ptr{ X.at(self.in[0], r0 * heads * D * 2), X.at(self.in[1], r0 * kv * D * 2), X.at(self.in[2], r0 * kv * D * 2), X.at(self.in[3], r0 * heads * R * 2) };
             try self.launch(&self.kern, r, raw, X.at(to[0], r0 * heads * D * 2), X.at(to[1], r0 * heads * R * 2), .{ .k = to[2], .v = to[3] });
         }
@@ -470,7 +470,7 @@ pub const Table = struct {
     }
 
     fn launch(self: *Table, kern: *const A.Kernels, out: Ptr) !void {
-        const r: X.Rows = .{ .rows = @intCast(self.shape.rows), .pos = null, .seg_of = null, .segs = null, .tiles = null, .n_tiles = 0, .last_pos = 0, .streams = 1 };
+        const r: X.Rows = .{ .rows = @intCast(self.shape.rows), .pos = null, .seg_of = null, .segs = null, .tiles = null, .n_tiles = 0, .last_pos = 0, .streams = 1, .row0 = 0 };
         try A.relTable(kern, self.rig.dev.s, r, self.in[0], self.in[1], out);
         try self.rig.dev.s.synchronize();
     }

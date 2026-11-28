@@ -44,7 +44,7 @@ pub const registrations = [_]Options{
 };
 
 const geometry: X.Geometry = .{ .heads = heads, .kv_heads = kv, .extent = ref.extent };
-/// Partials a prompt window may hold at most: past this a window is a few tiles (the 512-row cap needs short contexts).
+/// Partials a prompt window may hold at most: past this a window is a few tiles (else 24 tiles of 21 rows, 504 rows).
 const partial_budget = 1 << 17;
 
 fn depth(_: c.Shape) usize {
@@ -55,7 +55,7 @@ fn sh(rows: usize, k: usize) c.Shape {
     return .{ .rows = rows, .n = n_out, .k = k };
 }
 
-// Contexts at the chunk and window edges, decode windows, 600 prompt rows (past the 512-row cap), 1M keys on a ring.
+// Contexts at the chunk and window edges, decode windows, 600 prompt rows (past a 504-row window), 1M keys on a ring.
 const sliding_served = [_]c.Shape{
     sh(8, 2048),    sh(1, 1048576), sh(1, 127),    sh(1, 128),  sh(1, 129),  sh(1, 255),   sh(1, 256),
     sh(1, 257),     sh(5, 1023),    sh(5, 1024),   sh(5, 1025), sh(7, 1030), sh(32, 5000), sh(33, 1030),
@@ -309,7 +309,7 @@ pub const Attn = struct {
 
     fn rowsAll(self: *const Attn) X.Rows {
         const d = self.dev;
-        return .{ .rows = @intCast(self.shape.rows), .pos = d.pos, .seg_of = null, .segs = d.segs, .tiles = d.tiles, .n_tiles = d.n_tiles, .last_pos = @intCast(self.shape.k - 1), .streams = @intCast(self.lay.streams) };
+        return .{ .rows = @intCast(self.shape.rows), .pos = d.pos, .seg_of = null, .segs = d.segs, .tiles = d.tiles, .n_tiles = d.n_tiles, .last_pos = @intCast(self.shape.k - 1), .streams = @intCast(self.lay.streams), .row0 = 0 };
     }
 
     /// The plan as the forward calls it, on the kernels the options name (a control swaps the decode kernel).
@@ -358,7 +358,7 @@ pub const Attn = struct {
     fn spansAlone(self: *Attn) !void {
         const d = self.dev;
         for (self.spans, 0..) |sp, i| {
-            const r: X.Rows = .{ .rows = @intCast(sp.n), .pos = X.at(d.pos, sp.row0 * 4), .seg_of = null, .segs = X.at(d.alone_segs, i * @sizeOf(X.Seg)), .tiles = X.at(d.alone_tiles, sp.tile0 * @sizeOf(X.Tile)), .n_tiles = @intCast(sp.tiles), .last_pos = @intCast(self.data.pos[sp.row0 + sp.n - 1]), .streams = 1 };
+            const r: X.Rows = .{ .rows = @intCast(sp.n), .pos = X.at(d.pos, sp.row0 * 4), .seg_of = null, .segs = X.at(d.alone_segs, i * @sizeOf(X.Seg)), .tiles = X.at(d.alone_tiles, sp.tile0 * @sizeOf(X.Tile)), .n_tiles = @intCast(sp.tiles), .last_pos = @intCast(self.data.pos[sp.row0 + sp.n - 1]), .streams = 1, .row0 = 0 };
             const p: X.Partials = .{ .o = d.po1, .ml = d.pml1, .stride = self.stride(), .entries = sp.n * heads * self.stride() };
             const b = sp.row0 * heads;
             try A.attend(&self.kern, self.rig.dev.s, r, self.lay.layer, p, X.at(d.q, b * D * 2), .{ .k = d.kc, .v = d.vc }, X.at(d.tab, b * ref.extent * 2), X.at(d.sink, b * 2), X.at(d.gate, b * D * 2), X.at(d.base, b * D * 2));

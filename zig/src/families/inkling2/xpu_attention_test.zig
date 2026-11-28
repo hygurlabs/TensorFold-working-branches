@@ -61,22 +61,19 @@ test "inkling2 xpu attention: tiles hold the rows of one segment and cover each 
     try t.expect(!k.isPrompt(32) and k.isPrompt(33));
 }
 
-test "inkling2 xpu attention: a prompt window holds the partials the buffer has, at most 512 rows, none if one tile does not fit" {
+test "inkling2 xpu attention: a prompt window holds the partials the buffer has, at most 24 tiles of 21 rows (504 rows), none if one tile does not fit" {
     try t.expectEqual(@as(usize, 24), k.windowTiles(mini, 1 << 30, 9)); // 24 tiles of 21 rows = 504, not 98
     try t.expectEqual(@as(usize, 2), k.windowTiles(mini, 2 * 21 * 24 * 4096, 4096));
     try t.expectEqual(@as(usize, 2), k.windowTiles(mini, 2 * 21 * 24 * 4096 + 21 * 24 * 4095, 4096));
     try t.expectEqual(@as(usize, 0), k.windowTiles(mini, 21 * 24 * 4096 - 1, 4096));
 }
 
-test "inkling2 xpu attention: the geometry comes from the config, the flags build the image, a config the image cannot serve is refused" {
+test "inkling2 xpu attention: the geometry comes from the config, a config other than the compiled image's is refused" {
     var arena: std.heap.ArenaAllocator = .init(t.allocator);
     defer arena.deinit();
     var text = try miniText(arena.allocator());
     const g = try k.Geometry.fromText(text);
     try t.expectEqual(mini, g);
-    var buf: [64]u8 = undefined;
-    try t.expectEqualStrings("-DHEADS=24 -DKVH=8 -DEXTENT=1024", try g.flags(&buf));
-    try t.expectError(error.NoSpaceLeft, g.flags(buf[0..8]));
     const keep = text;
     text.global.q += 8;
     try t.expectError(error.Inkling2Geometry, k.Geometry.fromText(text));
@@ -87,6 +84,18 @@ test "inkling2 xpu attention: the geometry comes from the config, the flags buil
     text.local.kv = 7;
     text.global.kv = 7;
     try t.expectError(error.Inkling2Geometry, k.Geometry.fromText(text));
+    // Small (q 48, kv 8) parses as a config but the image is compiled for Mini's 24 heads: refused, so are its loads
+    text = keep;
+    text.local.q = 48;
+    text.global.q = 48;
+    try t.expectError(error.Inkling2Geometry, k.Geometry.fromText(text));
+    const small: k.Geometry = .{ .heads = 48, .kv_heads = 8, .extent = 1024 };
+    const ctx: u8 = 0;
+    try t.expectError(error.Inkling2Geometry, A.Kernels.load(&ctx, "image", small));
+    // a group wider than a decode tile's 32 pairs would make tileRows 0
+    try t.expectError(error.Inkling2Geometry, (k.Geometry{ .heads = 264, .kv_heads = 8, .extent = 1024 }).check());
+    try t.expectError(error.Inkling2Geometry, (k.Geometry{ .heads = 24, .kv_heads = 0, .extent = 1024 }).check());
+    try mini.check();
     // the prep constants of the baseline's launch
     const c = k.Prep.fromText(keep);
     try t.expectEqual(k.Prep{ .qk_clip = 22.627416997969522, .rel_clip = 8.0, .floor = 8192.0, .alpha = 0.1, .eps = 1e-6 }, c);
@@ -168,7 +177,7 @@ fn ptr(n: usize) k.Ptr {
 }
 
 fn call(rows: u32, streams: u32, last_pos: u32) k.Rows {
-    return .{ .rows = rows, .pos = ptr(0x1000), .seg_of = ptr(0x2000), .segs = ptr(0x3000), .tiles = ptr(0x4000), .n_tiles = @intCast(k.tileCount(rows, mini.tileRows(k.isPrompt(rows)))), .last_pos = last_pos, .streams = streams };
+    return .{ .rows = rows, .pos = ptr(0x1000), .seg_of = ptr(0x2000), .segs = ptr(0x3000), .tiles = ptr(0x4000), .n_tiles = @intCast(k.tileCount(rows, mini.tileRows(k.isPrompt(rows)))), .last_pos = last_pos, .streams = streams, .row0 = 0 };
 }
 
 const no_cache: k.Cache = .{ .k = ptr(0x5000), .v = ptr(0x6000) };
@@ -284,7 +293,7 @@ test "inkling2 xpu attention: a prompt runs ink2_attn_pq in windows, each merged
     try t.expectEqual(Arg{ .ptr = 0xd000 + 42 * 24 * 128 * 2 }, m.args[5]);
     // the partials start at the buffer's start for every window
     try t.expectEqual(Arg{ .ptr = 0x7000 }, m.args[0]);
-    // a window never passes 512 rows, whatever the buffer holds
+    // a window never passes 24 tiles = 504 rows (window_rows 512 is the cap that count comes from)
     Mock.count = 0;
     const sl = k.Layer.sliding(1024, 2048);
     try attend(&kern, call(1100, 1, 1099), sl, part(9, 1 << 30));
@@ -316,7 +325,16 @@ test "inkling2 xpu attention: attend refuses a bad ring, zero streams and short 
     try t.expectError(error.Inkling2Tiles, attend(&kern, r, big, part(9, 1 << 30)));
     try t.expectError(error.Inkling2PartialRoom, attend(&kern, call(100, 1, 5000), big, part(9, 21 * 24 * 9 - 1)));
     try t.expectEqual(@as(usize, 0), Mock.count);
+    // a prompt whose segment does not start at row 0 would index partials the merge does not read
+    r = call(100, 1, 5000);
+    r.row0 = 50;
+    try t.expectError(error.Inkling2PromptRow0, attend(&kern, r, big, part(9, 1 << 30)));
+    // a global ring of 64 holds 64 rows, not 65 (positions 0 and 64 share slot 0); 64 rows: 2 launches
+    var g64 = k.Layer.global(64);
+    try t.expectError(error.Inkling2RingShort, attend(&kern, call(65, 1, 64), g64, part(1, 1 << 30)));
+    g64.chunk = k.global_chunk;
+    try attend(&kern, call(64, 1, 63), g64, part(1, 1 << 30));
     try attend(&kern, call(100, 1, 5000), big, part(9, 21 * 24 * 9));
     try attend(&kern, call(4, 1, 5000), l, part(9, 4 * 24 * 9));
-    try t.expectEqual(@as(usize, 2 * 5 + 2), Mock.count);
+    try t.expectEqual(@as(usize, 2 * 5 + 2 + 2), Mock.count);
 }

@@ -14,7 +14,7 @@ pub const decode_pairs = 32;
 pub const prompt_pairs = 64;
 /// Most rows a call takes the decode kernel for (the verify windows); more rows run the prompt kernel in windows.
 pub const decode_rows = 32;
-/// Most rows of one prompt window: the partials of a window are all the buffer holds at once.
+/// The cap a prompt window's tile count comes from: 512 / 21-row tiles = 24 tiles = 504 rows for Mini.
 pub const window_rows = 512;
 /// The kernel's softmax scale, 1 / sqrt(head_dim) in f32.
 pub const scale: f32 = 0.08838834764831845;
@@ -31,18 +31,29 @@ pub const Seg = extern struct { row0: i32, n: i32, p0: i32, pad: i32 = 0, off: i
 /// A work-group's rows: segment `seg`, rows `row`.. of it (attention_body.h's int2 tile).
 pub const Tile = extern struct { seg: i32, row: i32 };
 
-/// What the image is built for: -DHEADS, -DKVH and -DEXTENT of attention.cl (the head and rel widths are fixed).
+/// Mini's geometry, the one the single image is compiled for (attention_common.h's defaults, no -D is passed to ocloc).
+pub const compiled: Geometry = .{ .heads = 24, .kv_heads = 8, .extent = 1024 };
+
+/// What the image is built for: attention_common.h's HEADS, KVH and EXTENT (the head and rel widths are fixed).
 pub const Geometry = struct {
     heads: u32,
     kv_heads: u32,
     extent: u32,
 
-    /// The geometry of a config's attention; refuses one the single image cannot serve.
+    /// The geometry of a config's attention; refuses one other than the compiled one (no per-geometry build yet).
     pub fn fromText(t: config.Text) error{Inkling2Geometry}!Geometry {
         const l = t.local;
         if (l.q != t.global.q or l.kv != t.global.kv or l.dim != head_dim or t.global.dim != head_dim) return error.Inkling2Geometry;
         if (t.d_rel != d_rel or t.window != t.rel_extent or l.kv == 0 or l.q % l.kv != 0) return error.Inkling2Geometry;
-        return .{ .heads = l.q, .kv_heads = l.kv, .extent = t.window };
+        const g: Geometry = .{ .heads = l.q, .kv_heads = l.kv, .extent = t.window };
+        try g.check();
+        return g;
+    }
+
+    /// Refuses a geometry other than the compiled one, or a group wider than a decode tile's pairs.
+    pub fn check(g: Geometry) error{Inkling2Geometry}!void {
+        if (g.kv_heads == 0 or g.heads % g.kv_heads != 0 or g.group() > decode_pairs) return error.Inkling2Geometry;
+        if (g.heads != compiled.heads or g.kv_heads != compiled.kv_heads or g.extent != compiled.extent) return error.Inkling2Geometry;
     }
 
     /// Query heads a key head.
@@ -54,11 +65,6 @@ pub const Geometry = struct {
     pub fn tileRows(g: Geometry, prompt: bool) u32 {
         const pairs: u32 = if (prompt) prompt_pairs else decode_pairs;
         return pairs / g.group();
-    }
-
-    /// The compiler options that make the image for this geometry.
-    pub fn flags(g: Geometry, buf: []u8) error{NoSpaceLeft}![]const u8 {
-        return std.fmt.bufPrint(buf, "-DHEADS={d} -DKVH={d} -DEXTENT={d}", .{ g.heads, g.kv_heads, g.extent });
     }
 
     /// Bytes of the bias table of `rows` rows (bf16) and of their partials of `stride` chunks.
@@ -96,9 +102,10 @@ pub fn ringFor(window: u32, rows: u32) u32 {
     return @intCast(std.mem.alignForward(usize, @as(usize, window) + rows - 1, tile_keys));
 }
 
-/// The ring the tiles assume: whole 64-key tiles (a tile read never wraps), and a window plus the rows less one.
+/// The ring the tiles assume: whole 64-key tiles (no read wraps); window + rows - 1 slots, or a global layer's rows.
 pub fn ringFits(l: Layer, rows: u32) error{ Inkling2RingTiles, Inkling2RingShort }!void {
     if (l.ring == 0 or l.ring % tile_keys != 0) return error.Inkling2RingTiles;
+    if (l.window == 0 and rows > l.ring) return error.Inkling2RingShort;
     if (@as(u64, l.window) + rows > @as(u64, l.ring) + 1) return error.Inkling2RingShort;
 }
 
@@ -145,7 +152,7 @@ pub fn isPrompt(rows: u32) bool {
     return rows > decode_rows;
 }
 
-/// Prompt tiles a window holds: as many as the partials hold at `stride` chunks, within `window_rows` rows; 0 if none.
+/// Prompt tiles a window holds: as many as the partials fit, at most `window_rows` / tile rows; 0 if none.
 pub fn windowTiles(g: Geometry, entries: usize, stride: u32) usize {
     const t = g.tileRows(true);
     const fit = entries / (@as(usize, g.heads) * stride) / t;
@@ -178,6 +185,7 @@ pub const Rows = struct {
     n_tiles: u32,
     last_pos: u32, // the call's latest row position (a global layer's chunks run to it)
     streams: u32, // segments in `segs`, stated by every caller: only one stream's rows take the prompt kernel
+    row0: u32, // the first segment's row0, stated by every caller: a prompt's partials and its merge start at row 0
 };
 
 /// The chunk partials: `stride` chunks a (row, head), in a buffer of `entries` of them (rows x heads x stride at most).
@@ -196,6 +204,7 @@ pub fn Attention(comptime Dev: type) type {
             merge: Dev.Kernel,
 
             pub fn load(ctx: *const Dev.Context, image: []const u8, geometry: Geometry) !Kernels {
+                try geometry.check();
                 if (image.len == 0) return error.BuiltWithoutKernels;
                 var mod = try Dev.load(ctx, image);
                 errdefer Dev.unload(&mod);
@@ -241,6 +250,7 @@ pub fn Attention(comptime Dev: type) type {
             if (slotsFor(l, @as(usize, r.last_pos) + 1) > p.stride) return error.Inkling2Partials;
             const prompt = isPrompt(r.rows);
             if (prompt and r.streams != 1) return error.Inkling2Streams;
+            if (prompt and r.row0 != 0) return error.Inkling2PromptRow0;
             const tile_rows = g.tileRows(prompt);
             if (prompt) {
                 if (r.n_tiles != tileCount(r.rows, tile_rows)) return error.Inkling2Tiles;
