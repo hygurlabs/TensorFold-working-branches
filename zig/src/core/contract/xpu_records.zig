@@ -11,7 +11,7 @@ pub const Record = struct { launch: X, usage: [limits.xe.len]U, compiled: bool =
 const glue = limits.Format.native;
 
 /// Qwen3.8-27B glue and attention, including the replaced pair and the attention-specific shape control.
-pub const records = [_]Record{
+const qwen27 = [_]Record{
     .{
         .launch = .{ .name = "add_rmsnorm", .symbol = "add_rmsnorm", .image = "glue", .format = glue, .threads = .{ 128, 1, 1 }, .slm = 10272, .sub_group = 16, .grf = 256 },
         .usage = .{.{ .threads = .{ 128, 1, 1 }, .slm = 10272, .sub_group = 16, .grf = 256 }},
@@ -113,6 +113,9 @@ pub const records = [_]Record{
         .usage = .{.{ .threads = .{ 16, 1, 1 }, .sub_group = 16, .grf = 256 }},
     },
 };
+
+/// Every registered launch: the Qwen3.8-27B glue and attention, then Inkling 2's attention (xpu_records_inkling2.zig).
+pub const records = qwen27 ++ @import("xpu_records_inkling2.zig").records;
 
 /// Gate 5's planted XPU controls: one for each fit rule the audit must fire.
 pub const controls = [_]Record{

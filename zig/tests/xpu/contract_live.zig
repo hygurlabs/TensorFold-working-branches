@@ -18,12 +18,23 @@ fn imageOf(name: []const u8) ?rig_.Image {
     if (std.mem.eql(u8, name, "contract_merge_upstream")) return .merge_upstream;
     if (std.mem.eql(u8, name, "contract_gate_controls")) return .gate;
     if (std.mem.eql(u8, name, "contract_controls")) return .controls;
+    if (std.mem.eql(u8, name, "inkling2_attention")) return .inkling2;
+    if (std.mem.eql(u8, name, "contract_inkling2_upstream")) return .inkling2_upstream;
+    if (std.mem.eql(u8, name, "contract_inkling2_controls")) return .inkling2_controls;
     return null;
 }
 
 /// The arguments the launcher sets for a symbol, as the source's parameter list holds them.
-fn argsOf(symbol: []const u8) u32 {
+fn argsOf(image: []const u8, symbol: []const u8) u32 {
+    const frozen = std.mem.eql(u8, image, "contract_inkling2_upstream");
     const table = [_]struct { []const u8, u32 }{
+        .{ "ink2_prep", 20 },
+        .{ "ink2_rel_table", 3 },
+        .{ "ink2_attn", if (frozen) 17 else 14 }, // the baseline's carries sink, gate and out
+        .{ "ink2_attn_pq", if (frozen) 18 else 15 },
+        .{ "ink2_merge", 10 },
+        .{ "tf_ctl_ink2_attn_ptrunc", 14 },
+        .{ "tf_ctl_ink2_attn_kblock", 14 },
         .{ "add_rmsnorm", 14 },
         .{ "add_rmsnorm_dec", 14 },
         .{ "gated_norm", 12 },
@@ -107,7 +118,7 @@ pub fn live(a: std.mem.Allocator, dev: *rig_.Dev) !usize {
             .spill = kp.spillMemSize,
             .args = kp.numKernelArgs,
         };
-        const problems = try limits.liveKernel(rec.launch, u, loaded, argsOf(rec.launch.symbol), t, &out, a);
+        const problems = try limits.liveKernel(rec.launch, u, loaded, argsOf(rec.launch.image, rec.launch.symbol), t, &out, a);
         const fits = try limits.fits(rec.launch, t, &out, a);
         if (control and (problems != 0 or fits == 0)) n += 1;
         if (!control) n += problems + fits;

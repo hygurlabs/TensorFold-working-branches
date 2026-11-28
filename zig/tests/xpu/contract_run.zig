@@ -13,6 +13,8 @@ const tp_k = @import("contract_tp.zig");
 const controls_k = @import("contract_controls.zig");
 const attn_k = @import("contract_attn.zig");
 const merge_k = @import("contract_merge.zig");
+const rows_k = @import("contract_inkling2_rows.zig");
+const prep_k = @import("contract_inkling2_prep.zig");
 
 const g = core.gates;
 
@@ -79,6 +81,30 @@ pub fn main(init: std.process.Init) !u8 {
     for (&merges, std.enums.values(merge_k.Variant)) |*x, v| x.* = try merge_k.Merge.init(a, &dev, v);
     defer for (&merges) |*x| x.deinit();
     for (&merges) |*x| try kernels.append(a, x.kernel());
+    var attns: [rows_k.registrations.len]rows_k.Attn = undefined;
+    var made_attns: usize = 0;
+    defer for (attns[0..made_attns]) |*x| x.deinit();
+    for (rows_k.registrations) |o| {
+        attns[made_attns] = try rows_k.Attn.init(a, &dev, o);
+        made_attns += 1;
+        try kernels.append(a, attns[made_attns - 1].kernel());
+    }
+    var preps: [prep_k.registrations.len]prep_k.Prep = undefined;
+    var made_preps: usize = 0;
+    defer for (preps[0..made_preps]) |*x| x.deinit();
+    for (prep_k.registrations) |o| {
+        preps[made_preps] = try prep_k.Prep.init(a, &dev, o.global, o.mode);
+        made_preps += 1;
+        try kernels.append(a, preps[made_preps - 1].kernel());
+    }
+    var tables: [2]prep_k.Table = undefined;
+    var made_tables: usize = 0;
+    defer for (tables[0..made_tables]) |*x| x.deinit();
+    for ([_]bool{ false, true }) |frozen| {
+        tables[made_tables] = try prep_k.Table.init(a, &dev, frozen);
+        made_tables += 1;
+        try kernels.append(a, tables[made_tables - 1].kernel());
+    }
     var controls: [std.enums.values(controls_k.Which).len]controls_k.Control = undefined;
     for (&controls, std.enums.values(controls_k.Which)) |*x, w| x.* = try controls_k.Control.init(a, &dev, w);
     defer for (&controls) |*x| x.deinit();
