@@ -157,7 +157,8 @@ after group in slot order, each product is floored into a 27-bit window below th
 and of the running sum while that sum is nonzero; a product's window exponent is the sum of its exponent fields, except
 that f16 normalises a subnormal operand first. The accumulator is added last with one round to nearest even. NaN, inf x
 0 and inf - inf give the one NaN `0xffc00000`; otherwise an infinity wins; an exact zero sum is +0. A DPAS-based XPU
-baseline names this model and its K-block order, and its contract computes the expected bits on the host.
+baseline names this model and its K-block order, and its contract computes the expected bits on the host: XPU-ATT-QK
+is eight chained k16 steps from +0 (K-block order 0 to 7), XPU-ATT-PV one k16 step a 16-key block in key order.
 
 `zig build -Dxpu-contract=true tf-xpu-xe2-dpas-check` builds the checker. It runs the corpus of `xe2_dpas_cases.zig`
 through the card's own DPAS and compares every output with the model bit for bit. The corpus has four parts: hand-built
@@ -575,6 +576,29 @@ another's slots. `attend()` refuses a ring that is not whole 64-key tiles or is 
 call's rows less one, a call with no streams (only one stream takes the prompt kernel), and partial buffers holding
 fewer than rows x heads x stride partials. It does not refuse a global position past the ring, since the contract's
 4,096-slot ring over 1M keys wraps on purpose: the engine glue keeps a global layer's positions inside its ring.
+
+XPU checks Inkling 2's attention on the Arc Pro B70 at Mini's 24 query and 8 key heads, as the named baselines
+XPU-ATT-QK, -SOFTMAX, -PV, -FOLD-256, -FOLD-128 and -MERGE (kernels in `zig/kernels/xpu/inkling2/`, launch plan in
+`families/inkling2/xpu_attention.zig`, registrations in `contract_inkling2_{rows,prep,fill}.zig`, records in
+`xpu_records_inkling2.zig`, image `inkling2_attention` of `ink2_prep`, `ink2_rel_table`, `ink2_attn`, `ink2_attn_pq` and
+`ink2_merge`). The scores chain eight k16 DPAS steps over the 128 head dimensions from +0 (the Xe2 model above), then
+`(qk scale + bias) log2e` with the multiply and the add apart (`FP_CONTRACT OFF`); P is bf16 `exp2(s - mu)`; partials
+(m, l, o) are kept for 256 global or 128 sliding keys at absolute positions, and `ink2_merge` folds a row's chunks in
+order, then the sink as one raw logit with no value, then the sigmoid of the raw gate, rounding once to bf16. The merge
+uses the device's own `exp`, `exp2` and `/` (the image is built without the correctly rounded divide flag), so the
+float64 bound carries their error. Gate 3 has four byte comparisons, each against kernels frozen from the
+`ink-xpu-baseline` engine (`contract_inkling2_upstream*.cl`, KV8 off): the served launches against the frozen ones, the
+verify and prompt launches against one-row decode, three streams in one launch against each stream alone, and
+`ink2_prep` and `ink2_rel_table` against the frozen ones. Two exact cases pin P's bf16 rounding (sliding and global):
+rows below position 64, q 0, no sink, gate 1 and integer values, where every sum is exact and each output must equal
+bf16(sum P v / sum P); the device's `/` is not correctly rounded, so an output whose quotient lies within 4 fp32 ulp of
+a bf16 tie may round either way and is allowed one bf16 ulp, every other output none. Five planted controls go red at
+`shapes`: P cut to bf16 by truncation, a tile's 16-key blocks summed last to first in P.V, a 1,024-key fold in place of
+256, no sink (a sink above every key, run as -inf, so dropping it moves the output by its whole size) and no gate. The
+NaN rule: prep writes a value row that is not finite as zeros and its key row as NaN, so a NaN key makes every row that
+sees it NaN (the float64 reference gives the same classes), and the panels also plant a NaN q, +inf and NaN sinks and
+infinite gates. `attend()` refuses a ring that is not whole 64-key tiles, partial buffers that are too small, and a
+call with no streams. INT8 caches are outside it. The engine is not wired: the XPU open still refuses Inkling 2.
 
 On gfx12, HIP also checks the WMMA dense tile (`dense_wmma12_gemm`, both block geometries, fp32 and BF16 out). The
 small block meets its depth-k bound. The big block (64-deep K steps over swizzled LDS rows) replaces the 32-deep block
