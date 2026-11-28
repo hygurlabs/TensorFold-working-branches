@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Inkling 2 Mini on XPU (Intel Arc Pro B70): the XPU open names the model and refuses it until its engine lands; the Xe2 DPAS arithmetic is a host model checked against the card; the attention kernels (prep, bias table, decode, prompt, merge) are under the kernel contract with named baselines, byte-equal across decode, verify, prompt and stream groupings, not yet served (#5525, refs #5026).
+
 - CUDA: drafted Qwen3.8-27B now sends a draft hold with any wide stream through the full head in one pass by default, winning back the 1.3.7 loss at 4 greedy streams (+2.3% to +3.1% on two GB10s) with identical tokens; `TF_QWEN_DRAFT_FULL_HEAD=0` restores the split path (#5490, fixes #4439).
 
 - CUDA: `TF_CUDA_PREFILL_TRACE=1` (off by default) writes a cold-prefill stage ledger: prompt chunks and graph replay, drafter upload and trailing absorb, host syncs and copies, cache publication and memory peaks, fresh or resumed; with it unset nothing on the serving path changes.
